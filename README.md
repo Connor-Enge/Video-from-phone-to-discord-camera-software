@@ -45,4 +45,5 @@ If you skip this, the camera still works and Discord keeps using your normal mic
 | Can't find the PC | Check that Phone Cam is running on the PC (look for the tray icon) and that the PC is online. |
 | Reconnecting, and never Live | Check both devices are on the same Wi-Fi and it is not a guest network. |
 | Camera or microphone is blocked | On the iPhone: **Settings > Apps > Safari > Camera** and **Microphone**, set to Ask or Allow, then reload the page. |
+| (Phone is fine, but Discord has no **Phone Cam** camera) | Quit Discord completely (right-click its tray icon, **Quit Discord**) and open it again. It only notices new cameras when it starts. |
 | Live, but Discord shows "not connected" or black | In Discord, pick a different camera and then pick **Phone Cam** again. |
