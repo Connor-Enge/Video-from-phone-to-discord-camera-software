@@ -32,6 +32,7 @@ const id = decodeURIComponent(location.hash.slice(1));
 
 let stream, peer, call, timer, lock;
 let live = false, facing = 'user', height = 720;
+const UNREACHABLE = 'Found the PC, but can’t reach it. Put this phone on the same Wi-Fi as the PC and turn off any VPN.';
 
 function status(state, text) {
   $('status').dataset.state = state;
@@ -99,7 +100,8 @@ function retry(text) {
 function connect() {
   clearTimeout(timer);
   if (!stream) return;
-  timer = setTimeout(retry, 10000); // watchdog: keep trying until the call is live
+  // watchdog: keep trying until the call is live. Broker joined but no video means the network path is blocked.
+  timer = setTimeout(() => retry(peer && peer.open ? UNREACHABLE : undefined), 10000);
   const old = peer;
   peer = null; // so the old peer's handlers see they are stale
   if (old) old.destroy();
@@ -117,7 +119,7 @@ function connect() {
         clearTimeout(timer);
         status('live', 'Live');
       } else if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
-        retry();
+        retry(pc.connectionState === 'failed' ? UNREACHABLE : undefined);
       }
     });
   });
