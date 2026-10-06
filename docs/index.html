@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Phone Cam</title>
+<style>
+  html, body { height: 100%; margin: 0; background: #000; color: #fff; font: 17px/1.4 -apple-system, system-ui, sans-serif; }
+  [hidden] { display: none !important; }
+  #preview { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  #preview.mirror { transform: scaleX(-1); }
+  #status { position: fixed; top: 0; left: 0; right: 0; padding: calc(env(safe-area-inset-top) + 12px) 16px 12px; text-align: center; background: rgba(0, 0, 0, .6); }
+  #status::before { content: ""; display: inline-block; width: .6em; height: .6em; margin-right: .5em; border-radius: 50%; background: #fb0; }
+  #status[data-state=live]::before { background: #3d3; }
+  #status[data-state=error]::before { background: #f44; }
+  button { position: fixed; left: 50%; transform: translateX(-50%); border: 0; border-radius: 999px; color: #fff; font: inherit; font-weight: 600; }
+  #start { top: 50%; margin-top: -2.5em; padding: 1.5em 3em; font-size: 24px; background: #5865f2; }
+  #flip { bottom: calc(env(safe-area-inset-bottom) + 24px); padding: 1em 2em; background: rgba(60, 60, 60, .85); }
+  button:disabled { opacity: .5; }
+</style>
+</head>
+<body>
+<video id="preview" autoplay playsinline muted></video>
+<div id="status" role="status"></div>
+<button id="start" hidden>Start</button>
+<button id="flip" hidden>Flip camera</button>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const id = decodeURIComponent(location.hash.slice(1));
+
+let stream, peer, call, timer, lock;
+let live = false, facing = 'user', height = 720;
+
+function status(state, text) {
+  $('status').dataset.state = state;
+  $('status').textContent = text;
+}
+
+// 16:9 at 30 fps, per the contract. Phones swap width and height themselves in portrait.
+const size = () => ({ width: { ideal: height * 16 / 9 }, height: { ideal: height }, frameRate: { ideal: 30 } });
+
+function mediaError(e) {
+  if (e.name === 'NotAllowedError') return 'Camera or microphone is blocked. Allow both for this page, then reload.';
+  if (e.name === 'NotFoundError') return 'No camera or microphone found.';
+  return 'Camera error: ' + (e.message || e.name);
+}
+
+function showPreview() {
+  $('preview').srcObject = stream;
+  $('preview').classList.toggle('mirror', facing === 'user');
+}
+
+function watchCamera(track) {
+  // iOS ends the track if something else takes the camera. Reopening it needs a tap.
+  track.onended = () => stop('Camera stopped. Tap Start.');
+}
+
+async function start() {
+  $('start').hidden = true;
+  status('connecting', 'Starting camera…');
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, ...size() }, audio: true });
+  } catch (e) {
+    return stop(mediaError(e));
+  }
+  watchCamera(stream.getVideoTracks()[0]);
+  showPreview();
+  $('flip').hidden = false;
+  wake();
+  status('connecting', 'Connecting…');
+  connect();
+}
+
+function stop(reason) {
+  clearTimeout(timer);
+  live = false;
+  const old = peer;
+  peer = null;
+  if (old) old.destroy();
+  if (stream) stream.getTracks().forEach((t) => { t.onended = null; t.stop(); });
+  stream = null;
+  if (lock) lock.release().catch(() => {});
+  $('flip').hidden = true;
+  $('flip').disabled = false;
+  $('start').hidden = false;
+  status('error', reason);
+}
+
+function retry(text) {
+  live = false;
+  status('reconnecting', text || 'Reconnecting…');
+  clearTimeout(timer);
+  timer = setTimeout(connect, 2000);
+}
+
+// Start over with a fresh peer. The phone's own ID is random, so there is nothing to keep.
+function connect() {
+  clearTimeout(timer);
+  if (!stream) return;
+  timer = setTimeout(retry, 10000); // watchdog: keep trying until the call is live
+  const old = peer;
+  peer = null; // so the old peer's handlers see they are stale
+  if (old) old.destroy();
+
+  const p = peer = new Peer();
+  p.on('open', () => {
+    if (p !== peer) return;
+    call = p.call(id, stream);
+    p.connect(id).on('data', onMessage);
+    const pc = call.peerConnection;
+    pc.addEventListener('connectionstatechange', () => {
+      if (p !== peer) return;
+      if (pc.connectionState === 'connected') {
+        live = true;
+        clearTimeout(timer);
+        status('live', 'Live');
+      } else if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+        retry();
+      }
+    });
+  });
+  p.on('error', (e) => {
+    if (p !== peer) return;
+    if (e.type === 'peer-unavailable') retry('Can’t find the PC. Is Phone Cam running on it?');
+    else if (!live) retry('Reconnecting… (' + e.type + ')');
+  });
+  p.on('disconnected', () => {
+    if (p !== peer) return;
+    // Broker dropped. A live call does not need it, so keep the call and just rejoin the broker.
+    if (live) setTimeout(() => { if (p === peer && p.disconnected) p.reconnect(); }, 3000);
+    else retry();
+  });
+}
+
+function onMessage(msg) {
+  if (!msg || msg.type !== 'resolution' || ![720, 1080].includes(msg.height) || !stream) return;
+  height = msg.height;
+  stream.getVideoTracks()[0].applyConstraints(size()).catch((e) => console.warn('applyConstraints', e));
+}
+
+async function flip() {
+  $('flip').disabled = true;
+  const old = stream.getVideoTracks()[0];
+  const previous = facing;
+  // Stop the old camera first: phones cannot open two at once.
+  old.onended = null;
+  old.stop();
+  stream.removeTrack(old);
+  let track;
+  for (facing of [previous === 'user' ? 'environment' : 'user', previous]) {
+    try {
+      track = (await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, ...size() } })).getVideoTracks()[0];
+      break;
+    } catch (e) {
+      if (facing === previous) return stop(mediaError(e));
+    }
+  }
+  if (!stream) { track.stop(); return; } // stopped while the camera was opening
+  stream.addTrack(track);
+  watchCamera(track);
+  showPreview();
+  const sender = call && call.peerConnection && call.peerConnection.getSenders().find((s) => s.track && s.track.kind === 'video');
+  if (sender) await sender.replaceTrack(track).catch(() => retry());
+  $('flip').disabled = false;
+}
+
+async function wake() {
+  try { lock = await navigator.wakeLock.request('screen'); } catch (e) { /* unsupported or denied: phone may sleep */ }
+}
+
+// The wake lock is dropped whenever the page is hidden, and the call may have died meanwhile.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !stream) return;
+  wake();
+  if (!live) connect();
+});
+
+if (!id) {
+  status('error', 'No PC linked. Scan the QR code in the Phone Cam app on your PC.');
+} else if (!window.Peer || !navigator.mediaDevices) {
+  status('error', window.Peer ? 'This browser can’t use the camera here. Open the page in Safari.' : 'Couldn’t load. Check your internet connection and reload.');
+} else {
+  status('connecting', 'Tap Start to send your camera to the PC.');
+  $('start').hidden = false;
+  $('start').onclick = start;
+  $('flip').onclick = flip;
+}
+</script>
+</body>
+</html>

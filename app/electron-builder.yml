@@ -1,0 +1,19 @@
+appId: com.connorenge.phonecam
+productName: Phone Cam
+files:
+  - main.js
+  - receiver.html
+  - camera.js
+# outside app.asar so Windows can load and register it
+extraResources:
+  - from: vendor
+    to: vendor
+win:
+  target:
+    - target: nsis
+      arch: x64
+nsis:
+  # per-machine so the installer has admin rights for regsvr32
+  perMachine: true
+  include: build/installer.nsh
+  artifactName: Phone Cam Setup.${ext}

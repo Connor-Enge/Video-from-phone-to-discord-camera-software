@@ -1,0 +1,23 @@
+{
+  "name": "phone-cam",
+  "productName": "Phone Cam",
+  "version": "1.0.0",
+  "description": "Use an iPhone as a webcam in Discord on Windows 11",
+  "author": "Connor Enge",
+  "license": "MIT",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "koffi": "^3.3.2",
+    "peerjs": "^1.5.5",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  }
+}

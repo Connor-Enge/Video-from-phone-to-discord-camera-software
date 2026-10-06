@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; media-src mediastream: blob:; connect-src https://0.peerjs.com wss://0.peerjs.com">
+<title>Phone Cam</title>
+<style>
+  body { margin: 0; padding: 20px; font: 15px system-ui, sans-serif; background: #111; color: #eee; text-align: center; }
+  #qr { width: 300px; height: 300px; background: #fff; border-radius: 8px; }
+  #url { font-size: 12px; color: #999; word-break: break-all; user-select: all; }
+  #error { color: #f77; }
+  video { width: 100%; max-height: 200px; background: #000; border-radius: 8px; }
+</style>
+</head>
+<body>
+<p>Scan with your iPhone camera, then tap Start.</p>
+<img id="qr" alt="QR code for the phone page">
+<p id="url"></p>
+<p id="status" role="status">Waiting for phone</p>
+<p id="error" role="alert"></p>
+<video id="video" autoplay muted playsinline></video>
+<audio id="audio" autoplay muted></audio>
+<script>
+const { ipcRenderer } = require('electron')
+const { Peer } = require('peerjs')
+const QRCode = require('qrcode')
+const camera = require('./camera')
+
+const BASE_URL = process.env.PHONECAM_URL || 'https://connor-enge.github.io/Video-from-phone-to-discord-camera-software/'
+const STALL_MS = 2000 // no frame for this long means the phone is gone
+
+const $ = id => document.getElementById(id)
+const video = $('video'), audio = $('audio')
+const params = new URLSearchParams(location.search)
+const id = params.get('id')
+const url = BASE_URL + '#' + id
+
+const canvas = document.createElement('canvas')
+const ctx = canvas.getContext('2d', { willReadFrequently: true })
+let height, cameraOk = false, lastFrame = -Infinity, lastDecoded = 0, call, conn
+
+$('url').textContent = url
+QRCode.toDataURL(url, { width: 600, margin: 2 }).then(src => { $('qr').src = src })
+
+// The virtual camera's size is fixed when it is created, so a new resolution recreates it.
+function setHeight(h) {
+  height = h
+  canvas.width = h * 16 / 9
+  canvas.height = h
+  try {
+    camera.start(canvas.width, canvas.height)
+    cameraOk = true
+  } catch (e) {
+    cameraOk = false
+    $('error').textContent = 'Virtual camera failed: ' + e.message
+  }
+  if (conn && conn.open) conn.send({ type: 'resolution', height })
+}
+
+function sendCanvas() {
+  if (cameraOk) camera.send(ctx.getImageData(0, 0, canvas.width, canvas.height).data)
+}
+
+// requestVideoFrameCallback drops to 1 fps while the window is hidden in the tray, even with
+// backgroundThrottling off (measured). Decoding carries on, so poll the decoded-frame counter instead.
+function pump() {
+  const decoded = video.getVideoPlaybackQuality().totalVideoFrames
+  const vw = video.videoWidth, vh = video.videoHeight
+  if (decoded === lastDecoded || !vw) return
+  lastDecoded = decoded
+  const scale = Math.min(canvas.width / vw, canvas.height / vh)
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  ctx.drawImage(video, (canvas.width - vw * scale) / 2, (canvas.height - vh * scale) / 2, vw * scale, vh * scale)
+  lastFrame = performance.now()
+  sendCanvas()
+}
+
+// Once a second with no live phone, send the card so Discord never shows a frozen frame.
+function sendCard() {
+  const live = performance.now() - lastFrame < STALL_MS
+  $('status').textContent = live ? 'Phone connected' : 'Waiting for phone'
+  if (live) return
+  ctx.fillStyle = '#111'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  ctx.fillStyle = '#eee'
+  ctx.font = `${canvas.height / 12}px system-ui, sans-serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText('Phone Cam: not connected', canvas.width / 2, canvas.height / 2)
+  sendCanvas()
+}
+
+// Phone mic goes to VB-CABLE only. Without it the audio stays muted: playing it on the speakers would echo.
+async function routeAudio() {
+  const devices = await navigator.mediaDevices.enumerateDevices()
+  const cable = devices.find(d => d.kind === 'audiooutput' && d.label.includes('CABLE Input'))
+  ipcRenderer.send('cable', !!cable)
+  if (cable) await audio.setSinkId(cable.deviceId)
+  audio.muted = !cable
+}
+
+function connect() {
+  const peer = new Peer(id)
+  peer.on('open', () => { $('error').textContent = '' })
+  peer.on('call', c => {
+    if (call) call.close()
+    call = c
+    c.answer()
+    c.on('stream', stream => {
+      video.srcObject = stream
+      audio.srcObject = stream
+    })
+  })
+  peer.on('connection', c => {
+    if (conn) conn.close()
+    conn = c
+    c.on('open', () => c.send({ type: 'resolution', height }))
+  })
+  peer.on('error', e => { $('error').textContent = 'Connection: ' + e.type })
+  // Broker socket dropped: reconnect under the same ID. A fatal error destroys the peer instead, so start over.
+  peer.on('disconnected', () => setTimeout(() => peer.destroyed || peer.reconnect(), 3000))
+  peer.on('close', () => setTimeout(connect, 5000))
+}
+
+setHeight(Number(params.get('height')))
+ipcRenderer.on('resolution', (_, h) => setHeight(h))
+setInterval(pump, 8)
+setInterval(sendCard, 1000)
+navigator.mediaDevices.addEventListener('devicechange', routeAudio)
+routeAudio()
+connect()
+addEventListener('beforeunload', () => { try { camera.stop() } catch {} })
+</script>
+</body>
+</html>
